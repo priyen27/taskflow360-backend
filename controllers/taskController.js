@@ -117,3 +117,86 @@ exports.deleteTask = async (req, res) => {
   res.json({ message: 'Task deleted' });
 };
 
+exports.getTaskSummaryByProject = async (req, res) => {
+  const summary = await Task.aggregate([
+    { $match: { createdBy: req.user._id } },
+    {
+      $group: {
+        _id: "$project",
+        total: { $sum: 1 },
+        todo: { $sum: { $cond: [{ $eq: ["$status", "todo"] }, 1, 0] } },
+        inProgress: { $sum: { $cond: [{ $eq: ["$status", "in progress"] }, 1, 0] } },
+        done: { $sum: { $cond: [{ $eq: ["$status", "done"] }, 1, 0] } }
+      }
+    },
+    {
+      $lookup: {
+        from: "projects",
+        localField: "_id",
+        foreignField: "_id",
+        as: "project"
+      }
+    },
+    { $unwind: "$project" },
+    {
+      $project: {
+        _id: 0,
+        projectId: "$project._id",
+        projectName: "$project.name",
+        total: 1,
+        todo: 1,
+        inProgress: 1,
+        done: 1
+      }
+    }
+  ]);
+  res.json(summary);
+};
+
+exports.getOverdueTasks = async (req, res) => {
+  try {
+    const isAdmin = req.user.role === 'admin';
+
+    const matchConditions = [
+      { dueDate: { $lt: new Date() } },
+      { status: { $ne: 'done' } }
+    ];
+
+    if (isAdmin) {
+      // Later in pipeline: match project.createdBy
+    } else {
+      matchConditions.push({ assignee: req.user._id });
+    }
+
+    const overdueTasks = await Task.aggregate([
+      { $match: { $and: matchConditions } },
+      {
+        $lookup: {
+          from: 'projects',
+          localField: 'project',
+          foreignField: '_id',
+          as: 'project'
+        }
+      },
+      { $unwind: '$project' },
+      ...(isAdmin ? [
+        { $match: { 'project.createdBy': req.user._id } }
+      ] : []),
+      {
+        $project: {
+          _id: 1,
+          title: 1,
+          status: 1,
+          dueDate: 1,
+          projectId: '$project._id',
+          projectName: '$project.name'
+        }
+      }
+    ]);
+
+    res.status(200).json(overdueTasks);
+  } catch (err) {
+    console.error('Error fetching overdue tasks:', err);
+    res.status(500).json({ message: 'Failed to fetch overdue tasks' });
+  }
+};
